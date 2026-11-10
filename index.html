@@ -1,0 +1,253 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ripple</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root {
+    --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1d1b; --muted: #77756f;
+    --line: #e4e2dc; --accent: #2f6fde; --me: #e2553b; --bubble: #eef2fb;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #151514; --panel: #1f1f1d; --ink: #ecebe6; --muted: #9a988f;
+      --line: #33322f; --accent: #6b9bff; --me: #ff7a5c; --bubble: #26304a;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 -apple-system, "Pretendard", "Apple SD Gothic Neo", system-ui, sans-serif; }
+  .app { display: grid; grid-template-columns: 1fr 360px; height: 100%; }
+  #map { height: 100%; }
+  aside { display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--line); min-height: 0; }
+  header { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
+  header h1 { margin: 0 0 6px; font-size: 16px; }
+  .status { color: var(--muted); font-size: 12px; }
+  .status b { color: var(--ink); font-weight: 600; }
+  .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+  .row label { font-size: 12px; color: var(--muted); }
+  input, select, button { font: inherit; color: inherit; background: var(--bg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+  button { cursor: pointer; background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  #nick { width: 120px; }
+  #log { flex: 1; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
+  .msg { max-width: 85%; padding: 6px 10px; border-radius: 10px; background: var(--bubble); word-break: break-word; }
+  .msg .who { font-size: 11px; color: var(--muted); }
+  .msg.mine { align-self: flex-end; background: var(--accent); color: #fff; }
+  .msg.mine .who { color: rgba(255,255,255,.8); }
+  .sys { align-self: center; font-size: 12px; color: var(--muted); }
+  form { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); }
+  #text { flex: 1; min-width: 0; }
+  .note { padding: 0 16px 12px; font-size: 11px; color: var(--muted); }
+  .pin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #fff;
+    box-shadow: 0 0 0 1px rgba(0,0,0,.3); background: var(--accent); }
+  .pin.me { background: var(--me); }
+  .leaflet-tooltip.say { width: max-content; max-width: 200px; white-space: normal; font-size: 12px; }
+  @media (max-width: 720px) {
+    .app { grid-template-columns: 1fr; grid-template-rows: 45% 55%; }
+    aside { border-left: 0; border-top: 1px solid var(--line); }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <div id="map"></div>
+  <aside>
+    <header>
+      <h1>Ripple</h1>
+      <div class="status" id="status">위치 확인 중…</div>
+      <div class="row">
+        <label for="nick">닉네임</label><input id="nick" maxlength="16">
+        <label for="scope">범위</label>
+        <select id="scope">
+          <option value="2">넓게 (~1,250km)</option>
+          <option value="3" selected>지역 (~150km)</option>
+          <option value="4">동네 (~40km)</option>
+        </select>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" id="fuzz" checked> 위치 흐리게 (약 1km 단위)</label>
+      </div>
+    </header>
+    <div id="log"></div>
+    <form id="form">
+      <input id="text" placeholder="메시지 입력" autocomplete="off" maxlength="500" disabled>
+      <button id="send" disabled>보내기</button>
+    </form>
+    <div class="note">서버에 저장되는 내용이 없습니다. 메시지는 접속한 사람의 브라우저 사이로만 오가고, 새로고침하면 사라집니다.</div>
+  </aside>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+<script type="module">
+import { joinRoom, selfId } from 'https://cdn.jsdelivr.net/npm/trystero@0.26.0/+esm';
+
+const APP_ID = 'ripple-p2p-map-v1';
+const $ = id => document.getElementById(id);
+
+// ---------- 상태 ----------
+let room = null, roomId = null;
+let myPos = null;               // 실제 좌표 [lat, lng]
+const peers = new Map();        // peerId -> { nick, pos, marker }
+
+// ---------- 닉네임 ----------
+const animals = ['수달','고양이','너구리','펭귄','다람쥐','여우','부엉이','고래','판다','토끼'];
+const adjs = ['졸린','배고픈','용감한','수줍은','신난','느긋한','바쁜','조용한'];
+$('nick').value = localStorage.getItem('ripple-nick')
+  || `${adjs[Math.random()*adjs.length|0]} ${animals[Math.random()*animals.length|0]}`;
+
+// ---------- 지도 ----------
+const map = L.map('map').setView([37.5665, 126.978], 11);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19, attribution: '&copy; OpenStreetMap'
+}).addTo(map);
+const icon = me => L.divIcon({ className: '', html: `<div class="pin${me ? ' me' : ''}"></div>`, iconSize: [14, 14] });
+let myMarker = null;
+
+// ---------- geohash (방 이름용) ----------
+function geohash(lat, lng, precision) {
+  const B = '0123456789bcdefghjkmnpqrstuvwxyz';
+  let latR = [-90, 90], lngR = [-180, 180], hash = '', bit = 0, ch = 0, even = true;
+  while (hash.length < precision) {
+    const r = even ? lngR : latR, v = even ? lng : lat, mid = (r[0] + r[1]) / 2;
+    if (v >= mid) { ch = (ch << 1) | 1; r[0] = mid; } else { ch <<= 1; r[1] = mid; }
+    even = !even;
+    if (++bit === 5) { hash += B[ch]; bit = 0; ch = 0; }
+  }
+  return hash;
+}
+
+// 남에게 보내는 좌표. 흐리게 켜면 0.01도(약 1km) 격자로 반올림
+function sharedPos() {
+  if (!myPos) return null;
+  if (!$('fuzz').checked) return myPos;
+  return myPos.map(v => Math.round(v * 100) / 100);
+}
+
+// ---------- 화면 ----------
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function addLog(html, cls) {
+  const el = document.createElement('div');
+  el.className = cls; el.innerHTML = html;
+  $('log').appendChild(el);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+function sys(t) { addLog(esc(t), 'sys'); }
+function distKm(a, b) {
+  if (!a || !b) return null;
+  return map.distance(a, b) / 1000;
+}
+function updateStatus() {
+  const n = peers.size;
+  $('status').innerHTML = roomId
+    ? `방 <b>${esc(roomId)}</b> · 나 포함 <b>${n + 1}</b>명 접속`
+    : '위치를 정하면 근처 방에 들어갑니다';
+}
+function say(marker, text) {
+  marker.unbindTooltip();
+  marker.bindTooltip(esc(text), { permanent: true, direction: 'top', className: 'say', offset: [0, -8] }).openTooltip();
+  clearTimeout(marker._sayT);
+  marker._sayT = setTimeout(() => marker.unbindTooltip(), 6000);
+}
+
+// ---------- 방 ----------
+function enterRoom() {
+  if (!myPos) return;
+  const id = 'gh-' + geohash(myPos[0], myPos[1], +$('scope').value);
+  if (id === roomId) return;
+  if (room) { room.leave(); for (const p of peers.values()) p.marker?.remove(); peers.clear(); }
+
+  roomId = id;
+  room = joinRoom({ appId: APP_ID }, roomId);
+  const hello = room.makeAction('hello');   // { nick, pos }
+  const chat  = room.makeAction('chat');    // { text }
+
+  const announce = target => hello.send({ nick: $('nick').value.trim() || '익명', pos: sharedPos() }, target ? { target } : undefined);
+
+  room.onPeerJoin = pid => { peers.set(pid, { nick: '…', pos: null }); announce(pid); updateStatus(); };
+  room.onPeerLeave = pid => {
+    const p = peers.get(pid);
+    if (p) { p.marker?.remove(); sys(`${p.nick} 님이 나갔습니다`); }
+    peers.delete(pid); updateStatus();
+  };
+
+  hello.onMessage = (d, { peerId }) => {
+    if (!d || typeof d.nick !== 'string') return;
+    const p = peers.get(peerId) || {};
+    const isNew = !p.nick || p.nick === '…';
+    p.nick = d.nick.slice(0, 16);
+    p.pos = Array.isArray(d.pos) && d.pos.length === 2 && d.pos.every(Number.isFinite) ? d.pos : null;
+    if (p.pos) {
+      if (!p.marker) p.marker = L.marker(p.pos, { icon: icon(false) }).addTo(map);
+      else p.marker.setLatLng(p.pos);
+      const km = distKm(myPos, p.pos);
+      p.marker.bindPopup(`<b>${esc(p.nick)}</b>${km != null ? `<br>약 ${km < 1 ? '1km 이내' : km.toFixed(1) + 'km'}` : ''}`);
+    }
+    peers.set(peerId, p);
+    if (isNew) sys(`${p.nick} 님이 들어왔습니다`);
+    updateStatus();
+  };
+
+  chat.onMessage = (d, { peerId }) => {
+    if (!d || typeof d.text !== 'string') return;
+    const p = peers.get(peerId) || { nick: '익명' };
+    const text = d.text.slice(0, 500);
+    addLog(`<div class="who">${esc(p.nick)}</div>${esc(text)}`, 'msg');
+    if (p.marker) say(p.marker, text);
+  };
+
+  window.__send = text => chat.send({ text });
+  window.__announce = () => announce();
+
+  $('text').disabled = $('send').disabled = false;
+  sys(`방 ${roomId}에 들어왔습니다. 같은 구역 사람을 찾는 중…`);
+  updateStatus();
+}
+
+function setMyPos(lat, lng, fly) {
+  myPos = [lat, lng];
+  if (!myMarker) myMarker = L.marker(myPos, { icon: icon(true), zIndexOffset: 1000 }).addTo(map).bindPopup('나');
+  else myMarker.setLatLng(myPos);
+  if (fly) map.setView(myPos, 12);
+  enterRoom();
+  window.__announce?.();
+}
+
+// ---------- 이벤트 ----------
+$('form').addEventListener('submit', e => {
+  e.preventDefault();
+  const text = $('text').value.trim();
+  if (!text || !window.__send) return;
+  window.__send(text);
+  addLog(`<div class="who">나</div>${esc(text)}`, 'msg mine');
+  if (myMarker) say(myMarker, text);
+  $('text').value = '';
+});
+$('nick').addEventListener('change', () => {
+  localStorage.setItem('ripple-nick', $('nick').value.trim());
+  window.__announce?.();
+});
+$('fuzz').addEventListener('change', () => window.__announce?.());
+$('scope').addEventListener('change', enterRoom);
+map.on('click', e => {
+  if (!myPos || confirm('내 위치를 여기로 옮길까요?')) setMyPos(e.latlng.lat, e.latlng.lng, false);
+});
+
+// ---------- 시작 ----------
+updateStatus();
+if ('geolocation' in navigator) {
+  navigator.geolocation.getCurrentPosition(
+    p => setMyPos(p.coords.latitude, p.coords.longitude, true),
+    () => { $('status').textContent = '위치 권한이 없습니다. 지도를 눌러 내 위치를 정하세요.'; },
+    { enableHighAccuracy: false, timeout: 10000 }
+  );
+} else {
+  $('status').textContent = '지도를 눌러 내 위치를 정하세요.';
+}
+console.log('selfId', selfId);
+</script>
+</body>
+</html>
