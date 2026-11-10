@@ -7,30 +7,54 @@
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css">
 <style>
   :root {
-    --bg: #f6f5f2; --panel: #ffffff; --ink: #1d1d1b; --muted: #77756f;
-    --line: #e4e2dc; --accent: #2f6fde; --me: #e2553b; --bubble: #eef2fb;
+    --bg: #f4f4f4; --panel: #ffffff; --ink: #161616; --muted: #737373;
+    --line: #e2e2e2; --accent: #1f5eff; --me: #ff4a1c; --peer: #1f5eff; --bubble: #f0f0f0;
+    --halo: #ffffff;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg: #151514; --panel: #1f1f1d; --ink: #ecebe6; --muted: #9a988f;
-      --line: #33322f; --accent: #6b9bff; --me: #ff7a5c; --bubble: #26304a;
+      --bg: #121212; --panel: #1c1c1c; --ink: #ededed; --muted: #9a9a9a;
+      --line: #2e2e2e; --accent: #4d7dff; --me: #ff5a2e; --peer: #3f8cff; --bubble: #2a2a2a;
+      --halo: #121212;
     }
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink);
-    font: 14px/1.5 -apple-system, "Pretendard", "Apple SD Gothic Neo", system-ui, sans-serif; }
-  .app { display: grid; grid-template-columns: 1fr 360px; height: 100%; }
-  #map { height: 100%; }
-  aside { display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--line); min-height: 0; }
+    font: 14px/1.5 -apple-system, "Pretendard", "Apple SD Gothic Neo", system-ui, sans-serif; overflow: hidden; }
+  #map { position: fixed; inset: 0; background: var(--bg); }
+  /* 지도 타일을 완전한 흑백으로 */
+  .leaflet-tile-pane { filter: grayscale(1) brightness(1.06) contrast(.9); }
+  @media (prefers-color-scheme: dark) {
+    .leaflet-tile-pane { filter: grayscale(1) invert(1) brightness(.85) contrast(.9); }
+  }
+
+  /* ---------- 상단 칩 ---------- */
+  #chip { position: fixed; top: 12px; right: 12px; z-index: 1000; display: flex; align-items: center; gap: 8px;
+    padding: 8px 14px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); color: var(--ink);
+    box-shadow: 0 2px 10px rgba(0,0,0,.12); cursor: pointer; font-size: 13px; }
+  #chip b { font-weight: 700; }
+  #badge { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 9px; background: var(--me); color: #fff;
+    font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; }
+  #badge[hidden] { display: none; }
+  body.open #chip { display: none; }
+
+  /* ---------- 사이드 채팅 ---------- */
+  aside { position: fixed; top: 0; right: 0; bottom: 0; width: 360px; z-index: 1001; display: flex; flex-direction: column;
+    background: var(--panel); border-left: 1px solid var(--line); box-shadow: -8px 0 24px rgba(0,0,0,.12);
+    transform: translateX(105%); transition: transform .22s ease; }
+  body.open aside { transform: none; }
   header { padding: 14px 16px 10px; border-bottom: 1px solid var(--line); }
-  header h1 { margin: 0 0 6px; font-size: 16px; }
-  .status { color: var(--muted); font-size: 12px; }
+  .head { display: flex; align-items: center; justify-content: space-between; }
+  header h1 { margin: 0; font-size: 16px; }
+  #close { background: none; border: 0; color: var(--muted); font-size: 22px; line-height: 1; padding: 2px 6px; }
+  .status { color: var(--muted); font-size: 12px; margin-top: 4px; }
   .status b { color: var(--ink); font-weight: 600; }
   .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
   .row label { font-size: 12px; color: var(--muted); }
   input, select, button { font: inherit; color: inherit; background: var(--bg);
     border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
-  button { cursor: pointer; background: var(--accent); color: #fff; border-color: var(--accent); }
+  button { cursor: pointer; }
+  #send { background: var(--accent); color: #fff; border-color: var(--accent); }
   button:disabled { opacity: .5; cursor: default; }
   #nick { width: 120px; }
   #log { flex: 1; overflow-y: auto; padding: 12px 16px; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
@@ -42,44 +66,60 @@
   form { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line); }
   #text { flex: 1; min-width: 0; }
   .note { padding: 0 16px 12px; font-size: 11px; color: var(--muted); }
-  .pin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #fff;
-    box-shadow: 0 0 0 1px rgba(0,0,0,.3); background: var(--accent); }
-  .pin.me { background: var(--me); }
+
+  /* ---------- 마커 ---------- */
+  .mk { position: relative; width: 24px; height: 24px; cursor: pointer; --c: var(--peer); }
+  .mk.me { --c: var(--me); }
+  .mk .dot { position: absolute; inset: 0; border-radius: 50%; background: var(--c);
+    border: 3px solid #fff; box-shadow: 0 0 0 1px rgba(0,0,0,.25), 0 3px 8px rgba(0,0,0,.35); }
+  .mk .ring { position: absolute; inset: 0; border-radius: 50%; background: var(--c); opacity: .5;
+    animation: ripple 2.2s ease-out infinite; }
+  .mk.talk .ring { animation-duration: .9s; }
+  @keyframes ripple { from { transform: scale(1); opacity: .55; } to { transform: scale(3.2); opacity: 0; } }
+  .mk .name { position: absolute; top: 28px; left: 50%; transform: translateX(-50%); white-space: nowrap;
+    font-size: 12px; font-weight: 700; color: var(--ink);
+    text-shadow: 0 0 3px var(--halo), 0 0 3px var(--halo), 0 0 3px var(--halo); }
+  .mk .name small { font-weight: 500; color: var(--muted); }
   .leaflet-tooltip.say { width: max-content; max-width: 200px; white-space: normal; font-size: 12px; }
+
+  @media (prefers-reduced-motion: reduce) { .mk .ring { animation: none; opacity: 0; } }
   @media (max-width: 720px) {
-    .app { grid-template-columns: 1fr; grid-template-rows: 45% 55%; }
-    aside { border-left: 0; border-top: 1px solid var(--line); }
+    aside { top: auto; left: 0; width: auto; height: 62%; border-left: 0; border-top: 1px solid var(--line);
+      border-radius: 14px 14px 0 0; transform: translateY(105%); }
   }
 </style>
 </head>
 <body>
-<div class="app">
-  <div id="map"></div>
-  <aside>
-    <header>
-      <h1>Ripple</h1>
-      <div class="status" id="status">위치 확인 중…</div>
-      <div class="row">
-        <label for="nick">닉네임</label><input id="nick" maxlength="16">
-        <label for="scope">범위</label>
-        <select id="scope">
-          <option value="2">넓게 (~1,250km)</option>
-          <option value="3" selected>지역 (~150km)</option>
-          <option value="4">동네 (~40km)</option>
-        </select>
-      </div>
-      <div class="row">
-        <label><input type="checkbox" id="fuzz" checked> 위치 흐리게 (약 1km 단위)</label>
-      </div>
-    </header>
-    <div id="log"></div>
-    <form id="form">
-      <input id="text" placeholder="메시지 입력" autocomplete="off" maxlength="500" disabled>
-      <button id="send" disabled>보내기</button>
-    </form>
-    <div class="note">서버에 저장되는 내용이 없습니다. 메시지는 접속한 사람의 브라우저 사이로만 오가고, 새로고침하면 사라집니다.</div>
-  </aside>
-</div>
+<div id="map"></div>
+
+<button id="chip" type="button" aria-label="채팅 열기">
+  <b>Ripple</b><span id="chipText">위치 확인 중…</span><span id="badge" hidden>0</span>
+</button>
+
+<aside aria-label="채팅">
+  <header>
+    <div class="head"><h1>Ripple</h1><button id="close" type="button" aria-label="채팅 닫기">×</button></div>
+    <div class="status" id="status">위치 확인 중…</div>
+    <div class="row">
+      <label for="nick">닉네임</label><input id="nick" maxlength="16">
+      <label for="scope">범위</label>
+      <select id="scope">
+        <option value="2">넓게 (~1,250km)</option>
+        <option value="3" selected>지역 (~150km)</option>
+        <option value="4">동네 (~40km)</option>
+      </select>
+    </div>
+    <div class="row">
+      <label><input type="checkbox" id="fuzz" checked> 위치 흐리게 (약 1km 단위)</label>
+    </div>
+  </header>
+  <div id="log"></div>
+  <form id="form">
+    <input id="text" placeholder="메시지 입력" autocomplete="off" maxlength="500" disabled>
+    <button id="send" disabled>보내기</button>
+  </form>
+  <div class="note">서버에 저장되는 내용이 없습니다. 메시지는 접속한 사람의 브라우저 사이로만 오가고, 새로고침하면 사라집니다.</div>
+</aside>
 
 <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
 <script type="module">
@@ -91,20 +131,36 @@ const $ = id => document.getElementById(id);
 // ---------- 상태 ----------
 let room = null, roomId = null;
 let myPos = null;               // 실제 좌표 [lat, lng]
+let unread = 0;
 const peers = new Map();        // peerId -> { nick, pos, marker }
 
 // ---------- 닉네임 ----------
 const animals = ['수달','고양이','너구리','펭귄','다람쥐','여우','부엉이','고래','판다','토끼'];
 const adjs = ['졸린','배고픈','용감한','수줍은','신난','느긋한','바쁜','조용한'];
+const myNick = () => $('nick').value.trim() || '익명';
 $('nick').value = localStorage.getItem('ripple-nick')
   || `${adjs[Math.random()*adjs.length|0]} ${animals[Math.random()*animals.length|0]}`;
 
 // ---------- 지도 ----------
-const map = L.map('map').setView([37.5665, 126.978], 11);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+const map = L.map('map', { zoomControl: false }).setView([37.5665, 126.978], 11);
+L.control.zoom({ position: 'bottomleft' }).addTo(map);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
   maxZoom: 19, attribution: '&copy; OpenStreetMap'
 }).addTo(map);
-const icon = me => L.divIcon({ className: '', html: `<div class="pin${me ? ' me' : ''}"></div>`, iconSize: [14, 14] });
+
+const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function makeIcon(me, label, sub) {
+  return L.divIcon({
+    className: '', iconSize: [24, 24], iconAnchor: [12, 12],
+    html: `<div class="mk${me ? ' me' : ''}"><span class="ring"></span><span class="dot"></span>`
+        + `<span class="name">${esc(label)}${sub ? ` <small>${esc(sub)}</small>` : ''}</span></div>`
+  });
+}
+function addMarker(pos, me) {
+  const m = L.marker(pos, { icon: makeIcon(me, ''), zIndexOffset: me ? 1000 : 0, riseOnHover: true }).addTo(map);
+  m.on('click', openChat);
+  return m;
+}
 let myMarker = null;
 
 // ---------- geohash (방 이름용) ----------
@@ -128,7 +184,15 @@ function sharedPos() {
 }
 
 // ---------- 화면 ----------
-const esc = s => String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function openChat() {
+  document.body.classList.add('open');
+  unread = 0; updateStatus();
+  $('log').scrollTop = $('log').scrollHeight;
+  if (!$('text').disabled && matchMedia('(min-width: 721px)').matches) $('text').focus();
+}
+function closeChat() { document.body.classList.remove('open'); }
+const isOpen = () => document.body.classList.contains('open');
+
 function addLog(html, cls) {
   const el = document.createElement('div');
   el.className = cls; el.innerHTML = html;
@@ -136,21 +200,27 @@ function addLog(html, cls) {
   $('log').scrollTop = $('log').scrollHeight;
 }
 function sys(t) { addLog(esc(t), 'sys'); }
-function distKm(a, b) {
-  if (!a || !b) return null;
-  return map.distance(a, b) / 1000;
+function distLabel(pos) {
+  if (!myPos || !pos) return '';
+  const km = map.distance(myPos, pos) / 1000;
+  return km < 1 ? '1km 이내' : `${km.toFixed(1)}km`;
 }
 function updateStatus() {
-  const n = peers.size;
+  const n = peers.size + 1;
   $('status').innerHTML = roomId
-    ? `방 <b>${esc(roomId)}</b> · 나 포함 <b>${n + 1}</b>명 접속`
+    ? `방 <b>${esc(roomId)}</b> · 나 포함 <b>${n}</b>명 접속`
     : '위치를 정하면 근처 방에 들어갑니다';
+  $('chipText').textContent = roomId ? `${n}명 접속 중` : (myPos ? '연결 중…' : '지도를 눌러 위치 정하기');
+  $('badge').hidden = unread === 0;
+  $('badge').textContent = unread > 99 ? '99+' : unread;
 }
 function say(marker, text) {
   marker.unbindTooltip();
-  marker.bindTooltip(esc(text), { permanent: true, direction: 'top', className: 'say', offset: [0, -8] }).openTooltip();
+  marker.bindTooltip(esc(text), { permanent: true, direction: 'top', className: 'say', offset: [0, -14] }).openTooltip();
+  const el = marker.getElement()?.querySelector('.mk');
+  el?.classList.add('talk');
   clearTimeout(marker._sayT);
-  marker._sayT = setTimeout(() => marker.unbindTooltip(), 6000);
+  marker._sayT = setTimeout(() => { marker.unbindTooltip(); el?.classList.remove('talk'); }, 6000);
 }
 
 // ---------- 방 ----------
@@ -165,7 +235,7 @@ function enterRoom() {
   const hello = room.makeAction('hello');   // { nick, pos }
   const chat  = room.makeAction('chat');    // { text }
 
-  const announce = target => hello.send({ nick: $('nick').value.trim() || '익명', pos: sharedPos() }, target ? { target } : undefined);
+  const announce = target => hello.send({ nick: myNick(), pos: sharedPos() }, target ? { target } : undefined);
 
   room.onPeerJoin = pid => { peers.set(pid, { nick: '…', pos: null }); announce(pid); updateStatus(); };
   room.onPeerLeave = pid => {
@@ -181,10 +251,9 @@ function enterRoom() {
     p.nick = d.nick.slice(0, 16);
     p.pos = Array.isArray(d.pos) && d.pos.length === 2 && d.pos.every(Number.isFinite) ? d.pos : null;
     if (p.pos) {
-      if (!p.marker) p.marker = L.marker(p.pos, { icon: icon(false) }).addTo(map);
+      if (!p.marker) p.marker = addMarker(p.pos, false);
       else p.marker.setLatLng(p.pos);
-      const km = distKm(myPos, p.pos);
-      p.marker.bindPopup(`<b>${esc(p.nick)}</b>${km != null ? `<br>약 ${km < 1 ? '1km 이내' : km.toFixed(1) + 'km'}` : ''}`);
+      p.marker.setIcon(makeIcon(false, p.nick, distLabel(p.pos)));
     }
     peers.set(peerId, p);
     if (isNew) sys(`${p.nick} 님이 들어왔습니다`);
@@ -197,6 +266,7 @@ function enterRoom() {
     const text = d.text.slice(0, 500);
     addLog(`<div class="who">${esc(p.nick)}</div>${esc(text)}`, 'msg');
     if (p.marker) say(p.marker, text);
+    if (!isOpen()) { unread++; updateStatus(); }
   };
 
   window.__send = text => chat.send({ text });
@@ -207,16 +277,26 @@ function enterRoom() {
   updateStatus();
 }
 
+function refreshMyMarker() {
+  myMarker?.setIcon(makeIcon(true, `${myNick()} (나)`));
+}
 function setMyPos(lat, lng, fly) {
   myPos = [lat, lng];
-  if (!myMarker) myMarker = L.marker(myPos, { icon: icon(true), zIndexOffset: 1000 }).addTo(map).bindPopup('나');
+  if (!myMarker) myMarker = addMarker(myPos, true);
   else myMarker.setLatLng(myPos);
+  refreshMyMarker();
+  for (const p of peers.values()) if (p.marker) p.marker.setIcon(makeIcon(false, p.nick, distLabel(p.pos)));
   if (fly) map.setView(myPos, 12);
   enterRoom();
   window.__announce?.();
+  updateStatus();
 }
 
 // ---------- 이벤트 ----------
+$('chip').addEventListener('click', openChat);
+$('close').addEventListener('click', closeChat);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeChat(); });
+
 $('form').addEventListener('submit', e => {
   e.preventDefault();
   const text = $('text').value.trim();
@@ -227,12 +307,16 @@ $('form').addEventListener('submit', e => {
   $('text').value = '';
 });
 $('nick').addEventListener('change', () => {
-  localStorage.setItem('ripple-nick', $('nick').value.trim());
+  localStorage.setItem('ripple-nick', myNick());
+  refreshMyMarker();
   window.__announce?.();
 });
 $('fuzz').addEventListener('change', () => window.__announce?.());
 $('scope').addEventListener('change', enterRoom);
+
+// 채팅이 열려 있으면 지도 클릭은 채팅을 닫기만 한다
 map.on('click', e => {
+  if (isOpen()) return closeChat();
   if (!myPos || confirm('내 위치를 여기로 옮길까요?')) setMyPos(e.latlng.lat, e.latlng.lng, false);
 });
 
@@ -241,11 +325,9 @@ updateStatus();
 if ('geolocation' in navigator) {
   navigator.geolocation.getCurrentPosition(
     p => setMyPos(p.coords.latitude, p.coords.longitude, true),
-    () => { $('status').textContent = '위치 권한이 없습니다. 지도를 눌러 내 위치를 정하세요.'; },
+    () => { $('chipText').textContent = '지도를 눌러 위치 정하기'; $('status').textContent = '위치 권한이 없습니다. 지도를 눌러 내 위치를 정하세요.'; },
     { enableHighAccuracy: false, timeout: 10000 }
   );
-} else {
-  $('status').textContent = '지도를 눌러 내 위치를 정하세요.';
 }
 console.log('selfId', selfId);
 </script>
